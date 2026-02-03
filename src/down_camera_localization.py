@@ -183,7 +183,10 @@ class ArucoMapLocalization:
             return
 
         estimates = []
+        weights = []
+
         yaw_estimates = []
+        yaw_weights = []
 
         for marker in msg.markers:
 
@@ -214,7 +217,21 @@ class ArucoMapLocalization:
             ry = wy - base_marker.pose.position.y
             rz = wz - base_marker.pose.position.z
 
+            # --------------------------------
+            # Distance weight (closer = better)
+            # --------------------------------
+
+            dx = base_marker.pose.position.x
+            dy = base_marker.pose.position.y
+            dz = base_marker.pose.position.z
+
+            dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+
+            weight = 1.0 / (dist*dist + 0.25)   # 0.25 evita infinito (0.5m)
+
+            # Store weighted pose
             estimates.append([rx, ry, rz])
+            weights.append(weight)
 
             # --------------------------------
             # Orientation (yaw from ArUco)
@@ -233,14 +250,22 @@ class ArucoMapLocalization:
             yaw_robot = np.arctan2(np.sin(yaw_robot), np.cos(yaw_robot))
 
             yaw_estimates.append(yaw_robot)
+            yaw_weights.append(weight)
 
         if len(estimates) == 0:
             return
 
-        mean_pos = np.mean(np.array(estimates), axis=0)
+        est_np = np.array(estimates)
+        w_np   = np.array(weights)
 
-        sin_sum = np.mean(np.sin(yaw_estimates))
-        cos_sum = np.mean(np.cos(yaw_estimates))
+        mean_pos = np.sum(est_np * w_np[:, None], axis=0) / np.sum(w_np)
+
+        yaw_np = np.array(yaw_estimates)
+        wy_np  = np.array(yaw_weights)
+
+        sin_sum = np.sum(np.sin(yaw_np) * wy_np)
+        cos_sum = np.sum(np.cos(yaw_np) * wy_np)
+
 
         mean_yaw = np.arctan2(sin_sum, cos_sum)
 
@@ -260,8 +285,10 @@ class ArucoMapLocalization:
         out.pose.pose.orientation.w = qw
 
         # Covariance (improves with more markers)
-        sigma_xy = 0.05 / len(estimates)
-        sigma_z  = 0.02 / len(estimates)
+        total_weight = np.sum(weights)
+        sigma_xy = 0.01 / np.sqrt(total_weight)
+        sigma_z  = 0.005 / np.sqrt(total_weight)
+        sigma_yaw = 0.1 / np.sqrt(total_weight)
 
         cov = [0.0]*36
         cov[0]  = sigma_xy
@@ -269,8 +296,8 @@ class ArucoMapLocalization:
         cov[14] = sigma_z
         sigma_yaw = 0.1 / len(yaw_estimates)   # rad²
 
-        cov[21] = 999.0   # roll ignore
-        cov[28] = 999.0   # pitch ignore
+        cov[21] = .01   # roll ignore
+        cov[28] = .01   # pitch ignore
         cov[35] = sigma_yaw
 
         out.pose.covariance = cov

@@ -9,12 +9,11 @@
     <!-- ============================= -->
     <!-- Downward camera localization node -->
     <!-- ============================= -->
-    <node
-        pkg="tandem_girona"
-        type="down_camera_localization.py"
-        name="down_camera_localization"
-        output="screen"
-        respawn="false">
+    <node pkg="tandem_girona" type="down_camera_localization.py" name="down_camera_localization"
+            output="screen" respawn="false">
     </node>
 
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_aruco" output="screen">
+        <rosparam command="load" file="$(find tandem_girona)/config/ekf_aruco.yaml"/>
+    </node>
 </launch>
