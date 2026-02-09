@@ -11,10 +11,18 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 # ============================
+# Temporal filter parameters
+# ============================
+
+ALPHA_POS = 0.4    # 0.2–0.5 recomendado
+ALPHA_YAW = 0.3
+
+# ============================
 # Fixed ArUco map (world_ned)
 # ============================
 
 CIRTESU_MESH_PATH = "package://girona500_description/meshes/cirtesu.dae"
+SIGMA_DIST = 1.0 
 
 CIRTESU_MESH_SCALE = [1.0, 1.0, 1.0]
 
@@ -42,6 +50,10 @@ ARUCO_MAP = {
 class ArucoMapLocalization:
 
     def __init__(self):
+
+        # Temporal filter memory
+        self.prev_pos = None
+        self.prev_yaw = None
 
         rospy.init_node("aruco_map_localization")
 
@@ -227,7 +239,7 @@ class ArucoMapLocalization:
 
             dist = np.sqrt(dx*dx + dy*dy + dz*dz)
 
-            weight = 1.0 / (dist*dist + 0.25)   # 0.25 evita infinito (0.5m)
+            weight = np.exp(-(dist**2) / (2.0 * SIGMA_DIST**2))
 
             # Store weighted pose
             estimates.append([rx, ry, rz])
@@ -269,41 +281,120 @@ class ArucoMapLocalization:
 
         mean_yaw = np.arctan2(sin_sum, cos_sum)
 
+        # =====================================================
+        # Temporal filtering (EMA)
+        # =====================================================
+
+        if self.prev_pos is None:
+
+            filt_pos = mean_pos
+            filt_yaw = mean_yaw
+
+        else:
+
+            # Position EMA
+            filt_pos = (
+                ALPHA_POS * mean_pos +
+                (1.0 - ALPHA_POS) * self.prev_pos
+            )
+
+            # Yaw circular EMA
+            dyaw = mean_yaw - self.prev_yaw
+            dyaw = np.arctan2(np.sin(dyaw), np.cos(dyaw))
+
+            filt_yaw = self.prev_yaw + ALPHA_YAW * dyaw
+
+        # Store state
+        self.prev_pos = filt_pos
+        self.prev_yaw = filt_yaw
+
+
+        # =====================================================
+        # Build local pose (base_link)
+        # =====================================================
+
         out = PoseWithCovarianceStamped()
         out.header.stamp = rospy.Time.now()
         out.header.frame_id = "cirtesu_base_link"
 
-        out.pose.pose.position.x = mean_pos[0]
-        out.pose.pose.position.y = mean_pos[1]
-        out.pose.pose.position.z = mean_pos[2]
+        out.pose.pose.position.x = filt_pos[0]
+        out.pose.pose.position.y = filt_pos[1]
+        out.pose.pose.position.z = filt_pos[2]
 
-        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -mean_yaw)
+        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -filt_yaw)
 
         out.pose.pose.orientation.x = qx
         out.pose.pose.orientation.y = qy
         out.pose.pose.orientation.z = qz
         out.pose.pose.orientation.w = qw
 
-        # Covariance (improves with more markers)
+
+        # =====================================================
+        # Covariance
+        # =====================================================
+
         total_weight = np.sum(weights)
-        sigma_xy = 0.01 / np.sqrt(total_weight)
-        sigma_z  = 0.005 / np.sqrt(total_weight)
-        sigma_yaw = 0.1 / np.sqrt(total_weight)
+
+        sigma_xy  = 0.13  / np.sqrt(total_weight)
+        sigma_z   = 0.005 / np.sqrt(total_weight)
+        sigma_yaw = 1.0   / np.sqrt(total_weight)
 
         cov = [0.0]*36
-        cov[0]  = sigma_xy
-        cov[7]  = sigma_xy
-        cov[14] = sigma_z
-        sigma_yaw = 0.1 / len(yaw_estimates)   # rad²
 
-        cov[21] = .01   # roll ignore
-        cov[28] = .01   # pitch ignore
-        cov[35] = sigma_yaw
+        cov[0]  = sigma_xy     # x
+        cov[7]  = sigma_xy     # y
+        cov[14] = sigma_z      # z
+
+        cov[21] = 0.5         
+        cov[28] = 0.5         
+        cov[35] = sigma_yaw   # yaw
 
         out.pose.covariance = cov
 
-        self.pose_pub.publish(out)
 
+        # =====================================================
+        # Transform pose to world_ned
+        # =====================================================
+
+        # Create PoseStamped for TF
+        pose_local = PoseStamped()
+        pose_local.header.stamp = out.header.stamp
+        pose_local.header.frame_id = "cirtesu_base_link"
+        pose_local.pose = out.pose.pose
+
+
+        # Lookup TF
+        try:
+            tf_world_base = self.tf_buffer.lookup_transform(
+                self.world_frame,        # "world_ned"
+                "cirtesu_base_link",
+                rospy.Time(0),
+                rospy.Duration(0.2)
+            )
+        except:
+            rospy.logwarn_throttle(1.0, "TF world_ned -> base not available")
+            return
+
+
+        # Transform pose
+        try:
+            pose_world = tf2_geometry_msgs.do_transform_pose(
+                pose_local,
+                tf_world_base
+            )
+        except:
+            rospy.logwarn("Pose transform failed")
+            return
+
+
+        # =====================================================
+        # Publish final pose in NED
+        # =====================================================
+
+        out.header.frame_id = "world_ned"
+        out.pose.pose = pose_world.pose
+
+        self.pose_pub.publish(out)
 
 if __name__ == "__main__":
     try:

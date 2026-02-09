@@ -1,0 +1,37 @@
+# --- Captain services ---
+start_service: "/girona500/captain/enable_keep_position_holonomic"
+stop_service: "/girona500/captain/disable_all_keep_positions"
+
+# --- IK mode configuration ---
+ik_mode:
+  frames:
+    world: world_ned
+    cartesian_velocity_frame: girona500/base_link
+    ee: girona500/bravo/gripper/camera
+
+  scaling:
+    linear: 0.3
+    angular: 0.3
+
+  deadband:
+    velocity_norm: 0.05
+
+  tasks:
+    joint_positions:
+      name: joint_positions
+      joints:
+        names:
+          - girona500/bravo/joint1
+          - girona500/bravo/joint2
+          - girona500/bravo/joint3
+          - girona500/bravo/joint4
+        target:
+          - -1.5700000000939462
+          - -0.5599999991549328
+          - -0.2600000182190157
+          - -1.515412329601239
+    bravo_ee_admittance:
+      name: bravo_ee_admittance
+
+    bravo_ee_configuration_feedforward:
+      name: bravo_ee_configuration_feedforward
